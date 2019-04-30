@@ -27,6 +27,7 @@ package com.owncloud.android.ui.activity;
 
 import android.Manifest;
 import android.accounts.Account;
+import android.accounts.AccountManager;
 import android.accounts.AuthenticatorException;
 import android.annotation.TargetApi;
 import android.app.Activity;
@@ -43,6 +44,7 @@ import android.content.SyncRequest;
 import android.content.pm.PackageManager;
 import android.content.res.Resources.NotFoundException;
 import android.net.Uri;
+import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -76,7 +78,10 @@ import com.owncloud.android.lib.common.operations.RemoteOperation;
 import com.owncloud.android.lib.common.operations.RemoteOperationResult;
 import com.owncloud.android.lib.common.operations.RemoteOperationResult.ResultCode;
 import com.owncloud.android.lib.common.utils.Log_OC;
+import com.owncloud.android.lib.resources.files.ReadFileRemoteOperation;
 import com.owncloud.android.lib.resources.files.RestoreFileVersionRemoteOperation;
+import com.owncloud.android.lib.resources.files.SearchRemoteOperation;
+import com.owncloud.android.lib.resources.files.model.RemoteFile;
 import com.owncloud.android.lib.resources.shares.OCShare;
 import com.owncloud.android.lib.resources.shares.ShareType;
 import com.owncloud.android.lib.resources.status.OwnCloudVersion;
@@ -120,6 +125,7 @@ import com.owncloud.android.utils.DataHolderUtil;
 import com.owncloud.android.utils.DisplayUtils;
 import com.owncloud.android.utils.ErrorMessageAdapter;
 import com.owncloud.android.utils.FileSortOrder;
+import com.owncloud.android.utils.FileStorageUtils;
 import com.owncloud.android.utils.MimeTypeUtil;
 import com.owncloud.android.utils.PermissionUtil;
 import com.owncloud.android.utils.PushUtils;
@@ -149,6 +155,7 @@ import androidx.fragment.app.FragmentManager;
 import androidx.fragment.app.FragmentTransaction;
 
 import static com.owncloud.android.datamodel.OCFile.PATH_SEPARATOR;
+import static com.owncloud.android.lib.resources.files.SearchRemoteOperation.SearchType.FILE_ID_SEARCH;
 
 /**
  * Displays, what files the user has available in his ownCloud. This is the main view.
@@ -268,6 +275,10 @@ public class FileDisplayActivity extends FileActivity
             fm.beginTransaction()
                     .add(taskRetainerFragment, TaskRetainerFragment.FTAG_TASK_RETAINER_FRAGMENT).commit();
         }   // else, Fragment already created and retained across configuration change
+
+        if (Intent.ACTION_VIEW.equals(getIntent().getAction())) {
+            handleOpenFileViaIntent(getIntent());
+        }
     }
 
     @Override
@@ -498,30 +509,34 @@ public class FileDisplayActivity extends FileActivity
             /// First fragment
             OCFileListFragment listOfFiles = getListOfFilesFragment();
             if (listOfFiles != null && TextUtils.isEmpty(searchQuery)) {
-                listOfFiles.listDirectory(getCurrentDir(), MainApp.isOnlyOnDevice(), false);
+                listOfFiles.listDirectory(getCurrentDir(), getFile(), MainApp.isOnlyOnDevice(), false);
             } else {
-                Log_OC.e(TAG, "Still have a chance to lose the initializacion of list fragment >(");
+                Log_OC.e(TAG, "Still have a chance to lose the initialization of list fragment >(");
             }
 
             /// Second fragment
-            OCFile file = getFile();
+            if (mDualPane) {
+                OCFile file = getFile();
 
-            Fragment secondFragment = getSecondFragment();
-            if (secondFragment == null) {
-                secondFragment = chooseInitialSecondFragment(file);
-            }
+                Fragment secondFragment = getSecondFragment();
+                if (secondFragment == null) {
+                    secondFragment = chooseInitialSecondFragment(file);
+                }
 
-            if (secondFragment != null) {
-                setSecondFragment(secondFragment);
-                updateFragmentsVisibility(true);
-                updateActionBarTitleAndHomeButton(file);
+                if (secondFragment != null) {
+                    setSecondFragment(secondFragment);
+                    updateFragmentsVisibility(true);
+                    updateActionBarTitleAndHomeButton(file);
+                } else {
+                    cleanSecondFragment();
+                    if (file.isDown() && MimeTypeUtil.isVCard(file.getMimeType())) {
+                        startContactListFragment(file);
+                    } else if (file.isDown() && PreviewTextFragment.canBePreviewed(file)) {
+                        startTextPreview(file, false);
+                    }
+                }
             } else {
                 cleanSecondFragment();
-                if (file.isDown() && MimeTypeUtil.isVCard(file.getMimeType())) {
-                    startContactListFragment(file);
-                } else if (file.isDown() && PreviewTextFragment.canBePreviewed(file)) {
-                    startTextPreview(file, false);
-                }
             }
 
         } else {
@@ -543,6 +558,8 @@ public class FileDisplayActivity extends FileActivity
         if (ACTION_DETAILS.equalsIgnoreCase(intent.getAction())) {
             setIntent(intent);
             setFile(intent.getParcelableExtra(EXTRA_FILE));
+        } else if (Intent.ACTION_VIEW.equals(intent.getAction())) {
+            handleOpenFileViaIntent(intent);
         } else if (RESTART.equals(intent.getAction())) {
             finish();
             startActivity(intent);
@@ -2595,4 +2612,101 @@ public class FileDisplayActivity extends FileActivity
         searchQuery = query;
     }
 
+    private void handleOpenFileViaIntent(Intent intent) {
+        showLoadingDialog("Retrieving file…");
+
+        String accountName = intent.getStringExtra("KEY_ACCOUNT");
+        setAccount(getUserAccountManager().getAccountByName(accountName));
+
+        String fileId = String.valueOf(intent.getStringExtra("KEY_FILE_ID"));
+
+        if (!"null".equals(fileId)) {
+            AccountManager am = AccountManager.get(this);
+            String userId = am.getUserData(getAccount(), AccountUtils.Constants.KEY_USER_ID);
+            SearchRemoteOperation searchRemoteOperation = new SearchRemoteOperation(fileId,
+                                                                                    FILE_ID_SEARCH,
+                                                                                    false,
+                                                                                    userId);
+
+            AsyncTask<Void, Void, String> remoteOperationAsyncTask = new AsyncTask() {
+
+                @Override
+                protected String doInBackground(Object[] objects) {
+                    Context context = getApplicationContext();
+                    RemoteOperationResult remoteOperationResult = searchRemoteOperation.execute(getAccount(), context);
+
+                    if (remoteOperationResult.isSuccess() && remoteOperationResult.getData() != null) {
+                        String remotePath = ((RemoteFile) remoteOperationResult.getData().get(0)).getRemotePath();
+
+                        ReadFileRemoteOperation operation = new ReadFileRemoteOperation(remotePath);
+                        RemoteOperationResult result = operation.execute(getAccount(), context);
+
+                        if (!result.isSuccess()) {
+                            Exception exception = result.getException();
+                            String message = "Error during saving file with parents: " + remotePath + " / "
+                                + result.getLogMessage();
+
+                            if (exception != null) {
+                                return exception.getMessage();
+                            } else {
+                                return message;
+                            }
+                        }
+
+                        RemoteFile remoteFile = (RemoteFile) result.getData().get(0);
+
+                        OCFile ocFile = FileStorageUtils.fillOCFile(remoteFile);
+                        FileStorageUtils.searchForLocalFileInDefaultPath(ocFile, getAccount());
+                        ocFile = getStorageManager().saveFileWithParent(ocFile, context);
+
+                        // also sync folder content
+                        OCFile toSync;
+                        if (ocFile.isFolder()) {
+                            toSync = ocFile;
+                        } else {
+                            toSync = getStorageManager().getFileById(ocFile.getParentId());
+                        }
+
+                        long currentSyncTime = System.currentTimeMillis();
+                        RemoteOperation refreshFolderOperation = new RefreshFolderOperation(toSync,
+                                                                                            currentSyncTime,
+                                                                                            true,
+                                                                                            true,
+                                                                                            getStorageManager(),
+                                                                                            getAccount(),
+                                                                                            context);
+                        refreshFolderOperation.execute(getAccount(), context);
+
+                        setFile(ocFile);
+                    } else {
+                        return remoteOperationResult.getLogMessage();
+                    }
+
+                    return "";
+                }
+
+                @Override
+                protected void onPostExecute(Object o) {
+                    dismissLoadingDialog();
+
+                    String message = (String) o;
+                    OCFileListFragment listOfFiles = getListOfFilesFragment();
+                    if (listOfFiles != null) {
+                        if (TextUtils.isEmpty(message)) {
+                            OCFile temp = getFile();
+                            setFile(getCurrentDir());
+                            listOfFiles.listDirectory(getCurrentDir(), temp, MainApp.isOnlyOnDevice(), false);
+                            updateActionBarTitleAndHomeButton(null);
+                        } else {
+                            DisplayUtils.showSnackMessage(listOfFiles.getView(), message);
+                        }
+                    }
+                }
+            };
+            remoteOperationAsyncTask.execute();
+        } else {
+            dismissLoadingDialog();
+            DisplayUtils.showSnackMessage(this, "Error retrieving file");
+        }
+    }
 }
