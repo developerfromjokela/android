@@ -1,9 +1,9 @@
 # [Pusacloud](https://pusacloud.developerfromjokela.com) Android app 
 
 
-**The Android client for [Nextcloud](https://nextcloud.com). Easily work with your data on your Nextcloud.**
+**The Android client for [Pusacloud](https://pusacloud.developerfromjokela.com). Easily work with your data on Pusa Cloud.**
 
-![App screenshots](/doc/Nextcloud_Android_Screenshots.png "App screenshots")
+
 
 
 ## Contribution Guidelines & License
