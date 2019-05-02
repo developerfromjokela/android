@@ -1,7 +1,7 @@
-# [Pusacloud](https://pusacloud.developerfromjokela.com) Android app 
+# [Pusa Cloud](https://pusacloud.developerfromjokela.com) Android app 
 
 
-**The Android client for [Pusacloud](https://pusacloud.developerfromjokela.com). Easily work with your data on Pusa Cloud.**
+**The Android client for [Pusa Cloud](https://pusacloud.developerfromjokela.com). Easily work with your data on Pusa Cloud.**
 
 
 
